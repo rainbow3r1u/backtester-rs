@@ -94,10 +94,11 @@ pub fn run_hybrid(
     k15: Arc<KlinesBySymbol>, k1h: Arc<KlinesBySymbol>, k1d: Arc<KlinesBySymbol>,
     shared: Arc<SharedData>,
     bb: &BBParams, vs: &VSParams,
+    spot_capital: f64, futures_capital: f64,
 ) -> HybridResult {
     let exclude: std::collections::HashSet<&str> = EXCLUDE.iter().copied().collect();
-    let mut spot = SpotSimulator::new(100.0, 20, 5.0, 0.001, bb.spot_tp_multiplier);
-    let mut fut_bal = 100.0f64;
+    let mut spot = SpotSimulator::new(spot_capital, 20, spot_capital / 20.0, 0.001, bb.spot_tp_multiplier);
+    let mut fut_bal = futures_capital;
     let mut fut_pos: Vec<Position> = vec![];
     let mut fut_closed: Vec<(String, f64, String)> = vec![]; // (sym, pnl, sig_type)
     let mut tp_per_bb: HashMap<String, usize> = HashMap::new();
@@ -314,15 +315,15 @@ pub fn run_hybrid(
         (build_prices(&shared, &k15, *shared.timestamps.last().unwrap_or(&0)).get(&p.symbol).copied().unwrap_or(p.entry_price) - p.entry_price) * p.quantity
     }).sum::<f64>();
 
-    let spot_ret = (spot_final - 100.0) / 100.0 * 100.0;
-    let fut_ret = (fut_final - 100.0) / 100.0 * 100.0;
-    let combined_ret = (spot_final + fut_final - 200.0) / 200.0 * 100.0;
+    let spot_ret = (spot_final - spot_capital) / spot_capital * 100.0;
+    let fut_ret = (fut_final - futures_capital) / futures_capital * 100.0;
+    let combined_ret = (spot_final + fut_final - spot_capital - futures_capital) / (spot_capital + futures_capital) * 100.0;
 
     let fut_n = fut_closed.len();
     let fut_wins = fut_closed.iter().filter(|(_, pnl, _)| *pnl > 0.0).count();
     let fut_wr = if fut_n > 0 { fut_wins as f64 / fut_n as f64 * 100.0 } else { 0.0 };
 
-    let mut peak = 200.0f64;
+    let mut peak = spot_capital + futures_capital;
     let mut max_dd = 0.0;
     for &(_, eq) in &fut_eq {
         if eq > peak { peak = eq; }

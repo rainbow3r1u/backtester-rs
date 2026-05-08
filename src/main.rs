@@ -37,6 +37,10 @@ enum Commands {
         #[arg(long)] bb_gain: Option<f64>,
         #[arg(long)] vs_fixed_ratio: Option<f64>,
         #[arg(long)] vs_fixed_gain: Option<f64>,
+        #[arg(long, default_value = "0.5")] vs_gain_min: f64,
+        #[arg(long, default_value = "9.9")] vs_gain_max: f64,
+        #[arg(long, default_value = "2.0")] vs_sl_pct: f64,
+        #[arg(long, default_value = "4")] vs_max_daily_tp: i32,
         #[arg(long)] vs_body_ratio: Option<f64>,
         #[arg(long)] split_ratio: Option<f64>,
         #[arg(long)] skip_ratio: Option<f64>,
@@ -69,7 +73,8 @@ fn main() -> anyhow::Result<()> {
         Commands::Search { trials, symbols, output, vs_ratio_min, vs_ratio_max,
                           bb_tp, bb_exhausted, split_ratio, skip_ratio, vs_body_ratio, cache_dir: cdir,
                           bb_period, bb_std, bb_hours, bb_hlw, bb_hlm, bb_gain,
-                          vs_fixed_ratio, vs_fixed_gain } => {
+                          vs_fixed_ratio, vs_fixed_gain, vs_gain_min, vs_gain_max,
+                          vs_sl_pct, vs_max_daily_tp } => {
             let cache_dir = PathBuf::from(&cdir);
             let (k15_all, _, _) = data_loader::load_from_cache(&cache_dir, &["15m", "1h", "1d"])?;
             let all_syms: Vec<String> = k15_all.keys().cloned().collect();
@@ -85,8 +90,11 @@ fn main() -> anyhow::Result<()> {
                 split_ratio, skip_ratio, vs_body_ratio,
                 bb_period, bb_std, bb_hours, bb_hlw, bb_hlm, bb_gain,
                 vs_fixed_ratio, vs_fixed_gain,
+                vs_gain_min, vs_gain_max,
+                vs_sl_pct, vs_max_daily_tp,
             )?;
             search::print_hybrid_top(&results, 10);
+            search::print_hybrid_stats(&results);
             if let Some(out) = output {
                 std::fs::write(&out, serde_json::to_string_pretty(&results)?)?;
                 println!("Results saved to {}", out.display());

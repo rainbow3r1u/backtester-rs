@@ -72,11 +72,14 @@ fn random_bb(rng: &mut impl Rng, bb_tp: Option<f64>, bb_exhausted: Option<i32>,
 }
 
 fn random_vs(rng: &mut impl Rng, ratio_min: f64, ratio_max: f64, body_override: Option<f64>,
-             fixed_ratio: Option<f64>, fixed_gain: Option<f64>) -> VSParams {
+             fixed_ratio: Option<f64>, fixed_gain: Option<f64>,
+             gain_min: f64, gain_max: f64, sl_pct: f64, max_daily_tp: i32) -> VSParams {
     VSParams {
         min_ratio: fixed_ratio.unwrap_or_else(|| (rng.gen_range((ratio_min*10.0) as i32..(ratio_max*10.0) as i32) as f64) / 10.0),
-        min_gain_pct: fixed_gain.unwrap_or_else(|| (rng.gen_range(5..100) as f64) / 10.0),
+        min_gain_pct: fixed_gain.unwrap_or_else(|| (rng.gen_range((gain_min*10.0) as i32..(gain_max*10.0) as i32) as f64) / 10.0),
         min_body_ratio: body_override.unwrap_or_else(|| (rng.gen_range(0..40) as f64) / 100.0),
+        sl_pct,
+        max_daily_tp,
         ..VSParams::default()
     }
 }
@@ -90,6 +93,8 @@ pub fn hybrid_search(
     bb_period: Option<usize>, bb_std: Option<f64>, bb_hours: Option<usize>,
     bb_hlw: Option<usize>, bb_hlm: Option<usize>, bb_gain: Option<f64>,
     vs_fixed_ratio: Option<f64>, vs_fixed_gain: Option<f64>,
+    vs_gain_min: f64, vs_gain_max: f64,
+    vs_sl_pct: f64, vs_max_daily_tp: i32,
 ) -> Result<Vec<HybridResult>> {
     let (k15_all, k1h_all, k1d_all) = data_loader::load_from_cache(cache_dir, &["15m", "1h", "1d"])?;
     let k15 = data_loader::filter_symbols(&k15_all, symbols, 17);
@@ -120,9 +125,10 @@ pub fn hybrid_search(
     let results: Vec<HybridResult> = (0..n_trials).into_par_iter().map(|_| {
         let mut rng = rand::thread_rng();
         let bb = random_bb(&mut rng, bb_tp, bb_exhausted, bb_period, bb_std, bb_hours, bb_hlw, bb_hlm, bb_gain);
-        let vs = random_vs(&mut rng, vs_ratio_min, vs_ratio_max, vs_body_ratio, vs_fixed_ratio, vs_fixed_gain);
+        let vs = random_vs(&mut rng, vs_ratio_min, vs_ratio_max, vs_body_ratio, vs_fixed_ratio, vs_fixed_gain, vs_gain_min, vs_gain_max, vs_sl_pct, vs_max_daily_tp);
         hybrid::run_hybrid(
-            Arc::clone(&k15a), Arc::clone(&k1ha), Arc::clone(&k1da), Arc::clone(&shared), &bb, &vs
+            Arc::clone(&k15a), Arc::clone(&k1ha), Arc::clone(&k1da), Arc::clone(&shared), &bb, &vs,
+            100.0, 500.0,  // BB 100 + VS 500
         )
     }).collect();
 
@@ -147,4 +153,51 @@ pub fn print_hybrid_top(results: &[HybridResult], n: usize) {
             r.vs_params.min_ratio, r.vs_params.margin, r.vs_params.tp_pct,
             r.vs_params.sl_pct * 100.0, r.vs_params.max_daily_tp, r.vs_params.min_gain_pct, r.vs_params.min_body_ratio);
     }
+}
+
+pub fn print_hybrid_stats(results: &[HybridResult]) {
+    let n = results.len();
+    if n == 0 { return; }
+
+    let mut comb: Vec<f64> = results.iter().map(|r| r.combined_return).collect();
+    let mut fut: Vec<f64> = results.iter().map(|r| r.futures_return).collect();
+    let mut spot: Vec<f64> = results.iter().map(|r| r.spot_return).collect();
+    let mut wr: Vec<f64> = results.iter().map(|r| r.futures_wr).collect();
+    let mut tr: Vec<f64> = results.iter().map(|r| r.futures_trades as f64).collect();
+    let mut dd: Vec<f64> = results.iter().map(|r| r.combined_dd).collect();
+
+    comb.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    fut.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    spot.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    wr.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    tr.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    dd.sort_by(|a,b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+    let pct = |v: &[f64], p: f64| {
+        let idx = ((v.len() as f64 - 1.0) * p / 100.0) as usize;
+        v[idx.min(v.len()-1)]
+    };
+
+    let fut_pos = fut.iter().filter(|&&x| x > 0.0).count();
+    let comb_pos = comb.iter().filter(|&&x| x > 0.0).count();
+
+    println!("\n=== FULL STATS ({} trials) ===", n);
+    println!("{:>12} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}", "", "comb", "fut", "spot", "wr", "trades", "dd");
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "mean", mean(&comb), mean(&fut), mean(&spot), mean(&wr), mean(&tr), mean(&dd));
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "median", pct(&comb, 50.0), pct(&fut, 50.0), pct(&spot, 50.0), pct(&wr, 50.0), pct(&tr, 50.0), pct(&dd, 50.0));
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "p25", pct(&comb, 25.0), pct(&fut, 25.0), pct(&spot, 25.0), pct(&wr, 25.0), pct(&tr, 25.0), pct(&dd, 25.0));
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "p75", pct(&comb, 75.0), pct(&fut, 75.0), pct(&spot, 75.0), pct(&wr, 75.0), pct(&tr, 75.0), pct(&dd, 75.0));
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "best", comb[n-1], fut[n-1], spot[n-1], wr[n-1], tr[n-1], dd[n-1]);
+    println!("  {:<8}  {:>8.1}% {:>8.1}% {:>8.1}% {:>8.1}% {:>8.0} {:>8.1}%",
+        "worst", comb[0], fut[0], spot[0], wr[0], tr[0], dd[0]);
+    println!("  >0 count {}/{}     {}/{}",
+        comb_pos, n, fut_pos, n);
+    println!("  >0 pct   {:.0}%        {:.0}%",
+        comb_pos as f64 / n as f64 * 100.0, fut_pos as f64 / n as f64 * 100.0);
 }
